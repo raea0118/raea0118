@@ -1,0 +1,193 @@
+import pandas as pd
+import geopandas as gpd
+import folium
+from folium.plugins import HeatMap
+from sklearn.cluster import DBSCAN
+
+#weather api에서 데이터 불러오기
+
+import streamlit as st
+import requests
+import pandas as pd
+import plotly.express as px
+
+# -----------------------------------------------------------------------------
+# 1. 페이지 설정 & 타이틀
+# -----------------------------------------------------------------------------
+st.set_page_config(
+    page_title="WeatherCare - 데이터 기반 맞춤형 스킨케어",
+    page_icon="🌿",
+    layout="wide"
+)
+
+st.title("🌿 WeatherCare")
+st.subheader("실시간 기후 데이터 기반 맞춤형 스킨케어 솔루션")
+st.caption("경영정보학과 데이터 분석 웹 프로젝트 | 외부 API & 비즈니스 알고리즘 결합")
+
+st.markdown("---")
+
+# -----------------------------------------------------------------------------
+# 2. 사이드바 - 사용자 프로필 & 위치 입력
+# -----------------------------------------------------------------------------
+st.sidebar.header("👤 사용자 프로필 설정")
+
+# 위치 선택 (실제 서비스에서는 GPS나 도시 선택)
+city = st.sidebar.selectbox("지역 선택", ["Seoul", "Busan", "Incheon", "Daegu", "Gwangju"])
+
+# 피부 타입 선택
+skin_type = st.sidebar.radio(
+    "피부 타입",
+    ["지성 (Oily)", "건성 (Dry)", "복합성 (Combination)", "민감성 (Sensitive)"]
+)
+
+# 피부 고민 다중 선택
+concerns = st.sidebar.multiselect(
+    "주요 피부 고민",
+    ["여드름/트러블", "건조함/당김", "모공/피지", "홍조/자극", "잡티/미백"],
+    default=["건조함/당김"]
+)
+
+# OpenWeatherMap API Key (실제 API 키가 없을 경우 테스트용 더미 데이터 작동)
+api_key = st.sidebar.text_input("OpenWeatherMap API Key (선택)", type="password")
+
+# -----------------------------------------------------------------------------
+# 3. 데이터 수집 함수 (OpenWeatherMap API 연동)
+# -----------------------------------------------------------------------------
+def get_weather_data(city_name, key="231400e5ad339842610f47d420a3459a"):
+    """
+    OpenWeatherMap API를 통해 날씨 데이터를 가져옵니다.
+    API 키가 없거나 오류 시 가상의 테스트 데이터를 반환합니다.
+    """
+    if key:
+        try:
+            url = f"http://api.openweathermap.org/data/2.5/weather?q={city_name}&appid={key}&units=metric"
+            res = requests.get(url).json()
+            return {
+                "temp": res["main"]["temp"],
+                "humidity": res["main"]["humidity"],
+                "uv_index": 6.5, # UV는 별도 One Call API 필요하므로 임의값 연동
+                "pm10": 45       # 미세먼지도 별도 Air Pollution API 연동 권장
+            }
+        except Exception:
+            st.sidebar.warning("API 연동 실패! 테스트 데이터로 전환합니다.")
+
+    # 테스트용 시뮬레이션 데이터
+    mock_data = {
+        "Seoul": {"temp": 28.5, "humidity": 75, "uv_index": 8.0, "pm10": 65},
+        "Busan": {"temp": 26.0, "humidity": 80, "uv_index": 7.0, "pm10": 30},
+        "Busan": {"temp": 26.0, "humidity": 80, "uv_index": 7.0, "pm10": 30},
+        "Incheon": {"temp": 27.0, "humidity": 70, "uv_index": 7.5, "pm10": 55},
+        "Daegu": {"temp": 31.0, "humidity": 55, "uv_index": 9.0, "pm10": 40},
+        "Gwangju": {"temp": 29.0, "humidity": 65, "uv_index": 8.2, "pm10": 35}
+    }
+    return mock_data.get(city_name, {"temp": 25.0, "humidity": 50, "uv_index": 5.0, "pm10": 30})
+
+weather = get_weather_data(city, api_key)
+
+# -----------------------------------------------------------------------------
+# 4. 핵심 알고리즘: 피부 자극 지수(SSI) 계산
+# -----------------------------------------------------------------------------
+def calculate_ssi(temp, humidity, uv, pm10):
+    """
+    피부 자극 지수(Skin Stress Index) 산출 가중치 알고리즘
+    SSI = (UV * 4) + (PM10 * 0.3) + |50 - 습도| * 0.5 + (기온 비상범위 가중치)
+    """
+    uv_score = uv * 4                  # UV(0~11) -> 최대 약 44점
+    pm_score = min(pm10 * 0.4, 30)     # PM10 -> 최대 30점
+    humidity_score = abs(50 - humidity) * 0.4 # 적정습도 50% 이탈 정도
+    
+    total_ssi = min(round(uv_score + pm_score + humidity_score), 100)
+    return total_ssi
+
+ssi_score = calculate_ssi(weather["temp"], weather["humidity"], weather["uv_index"], weather["pm10"])
+
+# -----------------------------------------------------------------------------
+# 5. 메인 대시보드 화면 구성
+# -----------------------------------------------------------------------------
+
+# [상단 메트릭] 실시간 기후 데이터 및 SSI 점수
+st.markdown(f"### 📍 **{city}** 실시간 기후 및 피부 환경")
+col1, col2, col3, col4, col5 = st.columns(5)
+
+col1.metric("현재 기온", f"{weather['temp']} °C")
+col2.metric("습도", f"{weather['humidity']} %")
+col3.metric("자외선(UV) 지수", f"{weather['uv_index']}")
+col4.metric("미세먼지(PM10)", f"{weather['pm10']} µg/m³")
+
+# SSI 점수 색상 구분
+if ssi_score >= 70:
+    ssi_status = "🚨 매우 위험"
+elif ssi_score >= 50:
+    ssi_status = "⚠️ 주의"
+else:
+    ssi_status = "✅ 양호"
+
+col5.metric("피부 자극 지수(SSI)", f"{ssi_score}점", ssi_status)
+
+st.markdown("---")
+
+# [중단 레이아웃] 데이터 시각화 & 추천 솔루션
+left_col, right_col = st.columns([1, 1])
+
+with left_col:
+    st.markdown("### 📊 기후 요소별 자극 기여도 분석")
+    
+    # 기후 요소별 기여도 차트 (Plotly)
+    chart_data = pd.DataFrame({
+        "요소": ["자외선(UV)", "미세먼지", "습도 불균형"],
+        "기여 점수": [weather["uv_index"] * 4, min(weather["pm10"] * 0.4, 30), abs(50 - weather["humidity"]) * 0.4]
+    })
+    
+    fig = px.bar(
+        chart_data, x="요소", y="기여 점수", 
+        color="요소",
+        title="오늘 피부에 가장 자극을 주는 환경 요인",
+        text_auto='.1f'
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+with right_col:
+    st.markdown("### 💡 오늘의 맞춤형 스킨케어 가이드")
+    
+    st.info(f"**[{skin_type}]** 타입을 위한 맞춤 가이드입니다.")
+    
+    # 기후 조건별 동적 처방 로직
+    recommended_ingredients = []
+    avoid_ingredients = []
+    
+    if weather["uv_index"] >= 7.0:
+        recommended_ingredients.extend(["병풀추출물(CICA)", "아줄렌", "나이아신아마이드"])
+        st.write("☀️ **자외선 경보:** 강한 햇빛으로 피부 열감이 심해질 수 있습니다. **쿨링 및 진정 케어**에 집중하세요.")
+        
+    if weather["humidity"] < 40:
+        recommended_ingredients.extend(["히알루론산", "세라마이드"])
+        st.write("💧 **건조 경보:** 실외 건조로 유수분 밸런스가 무너질 수 있습니다. **수분 듬뿍 보습막**을 형성하세요.")
+    elif weather["humidity"] > 70:
+        avoid_ingredients.append("중량 미네랄 오일")
+        st.write("🌧️ **고습도 경보:** 모공이 막히기 쉽습니다. **산뜻한 모공/피지 케어** 제품을 권장합니다.")
+
+    if weather["pm10"] >= 50:
+        recommended_ingredients.append("티트리")
+        st.write("🌫️ **미세먼지 주의:** 외출 후 약산성 클렌저를 사용해 **딥클렌징**을 진행하세요.")
+
+    st.markdown("#### ✅ 추천 성분")
+    st.success(", ".join(set(recommended_ingredients)) if recommended_ingredients else "기본 수분 보습 성분")
+    
+    if avoid_ingredients:
+        st.markdown("#### ❌ 오늘 피해야 할 성분/제형")
+        st.error(", ".join(set(avoid_ingredients)))
+
+st.markdown("---")
+
+# [하단] 추천 화장품 데이터베이스 예시 (Table)
+st.markdown("### 🛒 오늘 날씨에 딱 맞는 추천 화장품")
+
+# 더미 상품 DB (실제 과제 시 데이터베이스/CSV 파일 로드)
+products_db = pd.DataFrame([
+    {"제품명": "시카 진정 수분 크림", "브랜드": "A 뷰티", "주요성분": "병풀추출물, 히알루론산", "적합 기후": "고자외선/건조", "평점": 4.8},
+    {"제품명": "약산성 딥 클렌징 폼", "브랜드": "B 뷰티", "주요성분": "티트리, 살리실산", "적합 기후": "미세먼지 나쁨", "평점": 4.6},
+    {"제품명": "세라마이드 장벽 세럼", "브랜드": "C 뷰티", "주요성분": "세라마이드, 판테놀", "적합 기후": "건조/한파", "평점": 4.9},
+    {"제품명": "무기자차 모공 선크림", "브랜드": "D 뷰티", "주요성분": "징크옥사이드, 나이아신아마이드", "적합 기후": "고자외선/고습도", "평점": 4.7},
+])
+
+st.dataframe(products_db, use_container_width=True)
