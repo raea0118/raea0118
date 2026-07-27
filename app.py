@@ -40,20 +40,19 @@ concerns = st.sidebar.multiselect(
     default=["건조함/당김"],
 )
 
-api_key = st.sidebar.text_input("OpenWeatherMap API Key (선택)", type="password")
 
 
 # -----------------------------------------------------------------------------
 # 3. 데이터 수집 함수 (OpenWeatherMap API 연동)
 # -----------------------------------------------------------------------------
-def get_weather_data(city_name, key=""):
+def get_weather_data(city_name, key="231400e5ad339842610f47d420a3459a"):
     """OpenWeatherMap API를 통해 날씨 데이터를 가져옵니다.
 
     API 키가 없거나 오류 시 가상의 테스트 데이터를 반환합니다.
     """
     if key:
         try:
-            url = f"http://api.openweathermap.org/data/2.5/weather?q={city_name}&appid={key}&units=metric"
+            url = f"http://api.openweathermap.org/data/2.5/weather?q={city_name}&appid=231400e5ad339842610f47d420a3459a&units=metric"
             res = requests.get(url, timeout=5).json()
             if res.get("cod") == 200:
                 return {
@@ -65,20 +64,14 @@ def get_weather_data(city_name, key=""):
         except Exception:
             st.sidebar.warning("API 연동 실패! 테스트 데이터로 전환합니다.")
 
-    # 테스트용 시뮬레이션 데이터
-    mock_data = {
-        "Seoul": {"temp": 28.5, "humidity": 75, "uv_index": 8.0, "pm10": 65},
-        "Busan": {"temp": 26.0, "humidity": 80, "uv_index": 7.0, "pm10": 30},
-        "Incheon": {"temp": 27.0, "humidity": 70, "uv_index": 7.5, "pm10": 55},
-        "Daegu": {"temp": 31.0, "humidity": 55, "uv_index": 9.0, "pm10": 40},
-        "Gwangju": {"temp": 29.0, "humidity": 65, "uv_index": 8.2, "pm10": 35},
-    }
-    return mock_data.get(
-        city_name, {"temp": 25.0, "humidity": 50, "uv_index": 5.0, "pm10": 30}
-    )
 
 
-weather = get_weather_data(city, api_key)
+weather = get_weather_data(city,    key="231400e5ad339842610f47d420a3459a") or {
+    "temp": 22.0,
+    "humidity": 55,
+    "uv_index": 6.5,
+    "pm10": 45,
+}
 
 
 # -----------------------------------------------------------------------------
