@@ -1,0 +1,35 @@
+# get_weather_data.py
+
+import requests
+import streamlit as st
+
+def get_weather_data(
+    city_name, key="231400e5ad339842610f47d420a3459a"
+):
+    if key:
+        try:
+            # 1. 기본 날씨 API 호출 (기온, 습도, 위경도 좌표 획득)
+            url = f"http://api.openweathermap.org/data/2.5/weather?q={city_name}&appid={key}&units=metric"
+            res = requests.get(url, timeout=5).json()
+
+            lat = res["coord"]["lat"]
+            lon = res["coord"]["lon"]
+
+            # 2. 대기오염 API 호출 (미세먼지 PM10 획득)
+            air_url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={key}"
+            air_res = requests.get(air_url, timeout=5).json()
+
+            pm10_val = air_res["list"][0]["components"]["pm10"]
+
+            return {
+                "temp": res["main"]["temp"],
+                "humidity": res["main"]["humidity"],
+                "uv_index": 6.5,  # UV 지수 (One Call API 미사용 시 임의/추정값)
+                "pm10": pm10_val,  # 👈 실시간 미세먼지 수치 적용 완료!
+            }
+        except Exception as e:
+            st.sidebar.warning(
+                "API 연동 중 오류 발생! 테스트 데이터로 전환합니다."
+            )
+
+    

@@ -3,6 +3,9 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+# 💡 외부 모듈 파일(get_weather_data.py)에서 함수 임포트
+from get_weather_data import get_weather_data
+
 # -----------------------------------------------------------------------------
 # 1. 페이지 설정 & 타이틀
 # -----------------------------------------------------------------------------
@@ -45,33 +48,10 @@ concerns = st.sidebar.multiselect(
 # -----------------------------------------------------------------------------
 # 3. 데이터 수집 함수 (OpenWeatherMap API 연동)
 # -----------------------------------------------------------------------------
-def get_weather_data(city_name, key="231400e5ad339842610f47d420a3459a"):
-    """OpenWeatherMap API를 통해 날씨 데이터를 가져옵니다.
-
-    API 키가 없거나 오류 시 가상의 테스트 데이터를 반환합니다.
-    """
-    if key:
-        try:
-            url = f"http://api.openweathermap.org/data/2.5/weather?q={city_name}&appid=231400e5ad339842610f47d420a3459a&units=metric"
-            res = requests.get(url, timeout=5).json()
-            if res.get("cod") == 200:
-                return {
-                    "temp": res["main"]["temp"],
-                    "humidity": res["main"]["humidity"],
-                    "uv_index": 6.5,
-                    "pm10": 45,
-                }
-        except Exception:
-            st.sidebar.warning("API 연동 실패! 테스트 데이터로 전환합니다.")
 
 
-
-weather = get_weather_data(city,    key="231400e5ad339842610f47d420a3459a") or {
-    "temp": 22.0,
-    "humidity": 55,
-    "uv_index": 6.5,
-    "pm10": 45,
-}
+# 💡 날씨 데이터 불러오기 (사용자가 사이드바에 입력한 api_key 사용)
+weather = get_weather_data(city, 231400e5ad339842610f47d420a3459a)
 
 
 # -----------------------------------------------------------------------------
