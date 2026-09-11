@@ -1,8 +1,9 @@
-streamlit
-plotly
-pandas
-numpy
-scikit-learn
-xgboost
-lightgbm
-joblib
+streamlit>=1.40
+pandas>=2.2
+numpy>=2.0
+geopandas>=1.0
+pyogrio>=0.10
+shapely>=2.0
+pydeck>=0.9
+requests>=2.32
+dbfread>=2.0
