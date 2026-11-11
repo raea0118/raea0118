@@ -1,229 +1,188 @@
+import math
+import os
+import socket
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
 import requests
-import pandas as pd
-import plotly.express as px
-import streamlit as st
-
-# -----------------------------------------------------------------------------
-# 1. 페이지 설정 & 타이틀
-# -----------------------------------------------------------------------------
-st.set_page_config(
-    page_title="WeatherCare - 데이터 기반 맞춤형 스킨케어",
-    page_icon="🌿",
-    layout="wide",
-)
-
-st.title("🌿 WeatherCare")
-st.subheader("실시간 기후 데이터 기반 맞춤형 스킨케어 솔루션")
-st.caption(
-    "경영정보학과 데이터 분석 웹 프로젝트 | 외부 API & 비즈니스 알고리즘 결합"
-)
-
-st.markdown("---")
-
-# -----------------------------------------------------------------------------
-# 2. 사이드바 - 사용자 프로필 & 위치 입력
-# -----------------------------------------------------------------------------
-st.sidebar.header("👤 사용자 프로필 설정")
-
-city = st.sidebar.selectbox(
-    "지역 선택", ["Seoul", "Busan", "Incheon", "Daegu", "Gwangju"]
-)
-
-skin_type = st.sidebar.radio(
-    "피부 타입",
-    ["지성 (Oily)", "건성 (Dry)", "복합성 (Combination)", "민감성 (Sensitive)"],
-)
-
-concerns = st.sidebar.multiselect(
-    "주요 피부 고민",
-    ["여드름/트러블", "건조함/당김", "모공/피지", "홍조/자극", "잡티/미백"],
-    default=["건조함/당김"],
-)
-
-api_key = st.sidebar.text_input("OpenWeatherMap API Key (선택)", type="password")
+from dotenv import load_dotenv
+from flask import Flask, jsonify, render_template, request
 
 
-# -----------------------------------------------------------------------------
-# 3. 데이터 수집 함수 (OpenWeatherMap API 연동)
-# -----------------------------------------------------------------------------
-def get_weather_data(city_name, key=""):
-    """OpenWeatherMap API를 통해 날씨 데이터를 가져옵니다.
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 
-    API 키가 없거나 오류 시 가상의 테스트 데이터를 반환합니다.
+app = Flask(__name__)
+
+KST = timezone(timedelta(hours=9))
+API_URL = "https://apihub.kma.go.kr/api/typ01/url/kma_sfctm2.php"
+
+STATIONS = {
+    "108": "서울",
+    "159": "부산",
+    "143": "대구",
+    "112": "인천",
+    "156": "광주",
+    "133": "대전",
+    "152": "울산",
+    "184": "제주",
+}
+
+APP_VERSION = os.getenv("APP_VERSION", "v1")
+
+
+def parse_number(raw, allow_negative=False):
+    """결측값을 None으로 처리한다. 음수 기온은 유지한다."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+
+    if not math.isfinite(value):
+        return None
+
+    # 기온의 -99, -99.9 등 결측 표기를 처리한다.
+    if value <= -90:
+        return None
+
+    # 습도·풍속·강수량의 음수 표기는 측정값으로 표시하지 않는다.
+    if not allow_negative and value < 0:
+        return None
+
+    return value
+
+
+def parse_observation(text, station, requested_tm):
     """
-    if key:
-        try:
-            url = f"http://api.openweathermap.org/data/2.5/weather?q={city_name}&appid={key}&units=metric"
-            res = requests.get(url, timeout=5).json()
-            if res.get("cod") == 200:
-                return {
-                    "temp": res["main"]["temp"],
-                    "humidity": res["main"]["humidity"],
-                    "uv_index": 6.5,
-                    "pm10": 45,
-                }
-        except Exception:
-            st.sidebar.warning("API 연동 실패! 테스트 데이터로 전환합니다.")
+    ASOS 시간자료의 앞부분 필드 순서:
+    TM STN WD WS GST_WD GST_WS GST_TM PA PS PT PR
+    TA TD HM PV RN RN_DAY ...
+    """
+    for line in text.splitlines():
+        line = line.strip()
 
-    # 테스트용 시뮬레이션 데이터
-    mock_data = {
-        "Seoul": {"temp": 28.5, "humidity": 75, "uv_index": 8.0, "pm10": 65},
-        "Busan": {"temp": 26.0, "humidity": 80, "uv_index": 7.0, "pm10": 30},
-        "Incheon": {"temp": 27.0, "humidity": 70, "uv_index": 7.5, "pm10": 55},
-        "Daegu": {"temp": 31.0, "humidity": 55, "uv_index": 9.0, "pm10": 40},
-        "Gwangju": {"temp": 29.0, "humidity": 65, "uv_index": 8.2, "pm10": 35},
-    }
-    return mock_data.get(
-        city_name, {"temp": 25.0, "humidity": 50, "uv_index": 5.0, "pm10": 30}
+        if not line or line.startswith("#"):
+            continue
+
+        fields = line.split()
+
+        if len(fields) < 17:
+            continue
+
+        if fields[0] != requested_tm or fields[1] != station:
+            continue
+
+        observed_at = datetime.strptime(fields[0], "%Y%m%d%H%M")
+
+        return {
+            "station": STATIONS[station],
+            "station_id": station,
+            "observed_at": observed_at.strftime("%Y-%m-%d %H:%M"),
+            "temperature": parse_number(fields[11], allow_negative=True),
+            "humidity": parse_number(fields[13]),
+            "wind_speed": parse_number(fields[3]),
+            "daily_rainfall": parse_number(fields[16]),
+        }
+
+    return None
+
+
+@app.get("/")
+def index():
+    # 자료 수신 지연을 고려해 한 시간 전 정시를 기본으로 제시한다.
+    default_time = (
+        datetime.now(KST) - timedelta(hours=1)
+    ).replace(minute=0, second=0, microsecond=0)
+
+    return render_template(
+        "index.html",
+        stations=STATIONS,
+        default_time=default_time.strftime("%Y-%m-%dT%H:%M"),
     )
 
 
-weather = get_weather_data(city, api_key)
+@app.get("/healthz")
+def health():
+    # 외부 API 장애와 앱 자체의 실행 상태를 구분한다.
+    return jsonify(status="ok")
 
 
-# -----------------------------------------------------------------------------
-# 4. 핵심 알고리즘: 피부 자극 지수(SSI) 계산
-# -----------------------------------------------------------------------------
-def calculate_ssi(temp, humidity, uv, pm10):
-    uv_score = uv * 4
-    pm_score = min(pm10 * 0.4, 30)
-    humidity_score = abs(50 - humidity) * 0.4
+@app.get("/api/weather")
+def weather():
+    station = request.args.get("station", "108")
+    time_input = request.args.get("time", "")
 
-    total_ssi = min(round(uv_score + pm_score + humidity_score), 100)
-    return total_ssi
+    if station not in STATIONS:
+        return jsonify(error="지원하지 않는 관측 지점입니다."), 400
 
+    try:
+        selected = datetime.strptime(
+            time_input, "%Y-%m-%dT%H:%M"
+        ).replace(tzinfo=KST)
+    except ValueError:
+        return jsonify(error="날짜와 시간을 올바르게 선택해 주세요."), 400
 
-ssi_score = calculate_ssi(
-    weather["temp"], weather["humidity"], weather["uv_index"], weather["pm10"]
-)
+    if selected.minute != 0:
+        return jsonify(error="시간자료는 정시로 선택해 주세요. 예: 14:00"), 400
 
-# -----------------------------------------------------------------------------
-# 5. 메인 대시보드 화면 구성
-# -----------------------------------------------------------------------------
-st.markdown(f"### 📍 **{city}** 실시간 기후 및 피부 환경")
-col1, col2, col3, col4, col5 = st.columns(5)
+    if selected > datetime.now(KST):
+        return jsonify(error="미래의 관측자료는 조회할 수 없습니다."), 400
 
-col1.metric("현재 기온", f"{weather['temp']} °C")
-col2.metric("습도", f"{weather['humidity']} %")
-col3.metric("자외선(UV) 지수", f"{weather['uv_index']}")
-col4.metric("미세먼지(PM10)", f"{weather['pm10']} µg/m³")
+    api_key = os.getenv("KMA_API_KEY", "").strip()
 
-if ssi_score >= 70:
-    ssi_status = "🚨 매우 위험"
-elif ssi_score >= 50:
-    ssi_status = "⚠️ 주의"
-else:
-    ssi_status = "✅ 양호"
+    if not api_key or api_key.startswith("여기에"):
+        return jsonify(
+            error=".env에 기상청 API허브 인증키를 넣고 앱을 재시작해 주세요."
+        ), 503
 
-col5.metric("피부 자극 지수(SSI)", f"{ssi_score}점", ssi_status)
+    requested_tm = selected.strftime("%Y%m%d%H%M")
 
-st.markdown("---")
-
-left_col, right_col = st.columns([1, 1])
-
-with left_col:
-    st.markdown("### 📊 기후 요소별 자극 기여도 분석")
-
-    chart_data = pd.DataFrame({
-        "요소": ["자외선(UV)", "미세먼지", "습도 불균형"],
-        "기여 점수": [
-            weather["uv_index"] * 4,
-            min(weather["pm10"] * 0.4, 30),
-            abs(50 - weather["humidity"]) * 0.4,
-        ],
-    })
-
-    fig = px.bar(
-        chart_data,
-        x="요소",
-        y="기여 점수",
-        color="요소",
-        title="오늘 피부에 가장 자극을 주는 환경 요인",
-        text_auto=".1f",
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-with right_col:
-    st.markdown("### 💡 오늘의 맞춤형 스킨케어 가이드")
-
-    st.info(f"**[{skin_type}]** 타입을 위한 맞춤 가이드입니다.")
-
-    recommended_ingredients = []
-    avoid_ingredients = []
-
-    if weather["uv_index"] >= 7.0:
-        recommended_ingredients.extend(
-            ["병풀추출물(CICA)", "아줄렌", "나이아신아마이드"]
+    try:
+        response = requests.get(
+            API_URL,
+            params={
+                "tm": requested_tm,
+                "stn": station,
+                "help": "0",
+                "authKey": api_key,
+            },
+            timeout=(5, 20),
         )
-        st.write(
-            "☀️ **자외선 경보:** 강한 햇빛으로 피부 열감이 심해질 수 있습니다."
-            " **쿨링 및 진정 케어**에 집중하세요."
-        )
+        response.raise_for_status()
 
-    if weather["humidity"] < 40:
-        recommended_ingredients.extend(["히알루론산", "세라마이드"])
-        st.write(
-            "💧 **건조 경보:** 실외 건조로 유수분 밸런스가 무너질 수 있습니다."
-            " **수분 듬뿍 보습막**을 형성하세요."
-        )
-    elif weather["humidity"] > 70:
-        avoid_ingredients.append("중량 미네랄 오일")
-        st.write(
-            "🌧️ **고습도 경보:** 모공이 막히기 쉽습니다. **산뜻한 모공/피지"
-            " 케어** 제품을 권장합니다."
-        )
+    except requests.Timeout:
+        return jsonify(
+            error="기상청 응답 시간이 초과됐습니다. 잠시 후 다시 조회해 주세요."
+        ), 504
 
-    if weather["pm10"] >= 50:
-        recommended_ingredients.append("티트리")
-        st.write(
-            "🌫️ **미세먼지 주의:** 외출 후 약산성 클렌저를 사용해 **딥클렌징**을"
-            " 진행하세요."
-        )
+    except requests.RequestException:
+        # 예외 문자열에는 인증키가 포함된 요청 URL이 들어갈 수 있어
+        # 그대로 브라우저나 로그에 출력하지 않는다.
+        return jsonify(
+            error="기상청 API 요청에 실패했습니다. 네트워크와 API 이용 상태를 확인해 주세요."
+        ), 502
 
-    st.markdown("#### ✅ 추천 성분")
-    st.success(
-        ", ".join(set(recommended_ingredients))
-        if recommended_ingredients
-        else "기본 수분 보습 성분"
+    observation = parse_observation(
+        response.text, station, requested_tm
     )
 
-    if avoid_ingredients:
-        st.markdown("#### ❌ 오늘 피해야 할 성분/제형")
-        st.error(", ".join(set(avoid_ingredients)))
+    if observation is None:
+        return jsonify(
+            error=(
+                "해당 시각의 관측자료를 읽지 못했습니다. "
+                "조금 이전 시각으로 조회하거나 API허브의 인증키·활용승인 상태를 확인해 주세요."
+            )
+        ), 502
 
-st.markdown("---")
+    return jsonify(
+        **observation,
+        version=APP_VERSION,
+        server=socket.gethostname(),
+        fetched_at=datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
+    )
 
-st.markdown("### 🛒 오늘 날씨에 딱 맞는 추천 화장품")
 
-products_db = pd.DataFrame([
-    {
-        "제품명": "시카 진정 수분 크림",
-        "브랜드": "A 뷰티",
-        "주요성분": "병풀추출물, 히알루론산",
-        "적합 기후": "고자외선/건조",
-        "평점": 4.8,
-    },
-    {
-        "제품명": "약산성 딥 클렌징 폼",
-        "브랜드": "B 뷰티",
-        "주요성분": "티트리, 살리실산",
-        "적합 기후": "미세먼지 나쁨",
-        "평점": 4.6,
-    },
-    {
-        "제품명": "세라마이드 장벽 세럼",
-        "브랜드": "C 뷰티",
-        "주요성분": "세라마이드, 판테놀",
-        "적합 기후": "건조/한파",
-        "평점": 4.9,
-    },
-    {
-        "제품명": "무기자차 모공 선크림",
-        "브랜드": "D 뷰티",
-        "주요성분": "징크옥사이드, 나이아신아마이드",
-        "적합 기후": "고자외선/고습도",
-        "평점": 4.7,
-    },
-])
-
-st.dataframe(products_db, use_container_width=True)
+if __name__ == "__main__":
+    # 로컬 학습용 서버. 0.0.0.0은 이후 Docker 실행도 고려한 설정이다.
+    app.run(host="0.0.0.0", port=8000, debug=False)
+    

@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ASOS 날씨 관측</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #f2f5fa;
+      color: #18243a;
+      font-family: system-ui, sans-serif;
+    }
+    main {
+      max-width: 940px;
+      margin: 60px auto;
+      padding: 0 24px;
+    }
+    .eyebrow {
+      color: #2563eb;
+      font-weight: 700;
+      letter-spacing: 2px;
+    }
+    h1 { font-size: 36px; margin: 12px 0; }
+    .muted { color: #607086; line-height: 1.7; }
+    form {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      align-items: end;
+      background: white;
+      padding: 24px;
+      margin: 28px 0;
+      border-radius: 18px;
+    }
+    label { display: grid; gap: 8px; flex: 1; }
+    input, select, button {
+      padding: 12px;
+      border: 1px solid #d4dce8;
+      border-radius: 10px;
+      font: inherit;
+      min-height: 46px;
+    }
+    button {
+      background: #2563eb;
+      color: white;
+      border: none;
+      cursor: pointer;
+    }
+    button:disabled { opacity: .6; cursor: wait; }
+    #status { min-height: 24px; }
+    .error { color: #b42318; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin: 20px 0;
+    }
+    .card {
+      background: white;
+      border-radius: 18px;
+      padding: 24px 18px;
+      border: 1px solid #e4eaf2;
+    }
+    .card p { color: #607086; margin: 0 0 18px; }
+    .value { font-size: 28px; font-weight: 750; }
+    .meta {
+      background: #e7edf7;
+      border-radius: 12px;
+      padding: 16px;
+      line-height: 1.8;
+      overflow-wrap: anywhere;
+    }
+    footer { margin-top: 28px; font-size: 14px; }
+    a { color: #2563eb; }
+    @media (max-width: 700px) {
+      main { margin-top: 32px; }
+      .cards { grid-template-columns: repeat(2, 1fr); }
+      h1 { font-size: 28px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">KMA · ASOS</div>
+  <h1>지역별 날씨 관측</h1>
+  <p class="muted">
+    관측소와 시각을 선택해 실제 관측값을 확인하세요.<br>
+    모든 시각은 한국 표준시(KST) 기준입니다.
+  </p>
+
+  <form id="weather-form">
+    <label>
+      관측 지역
+      <select id="station">
+        {% for code, name in stations.items() %}
+        <option value="{{ code }}">{{ name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label>
+      관측 시각
+      <input
+        id="time"
+        type="datetime-local"
+        value="{{ default_time }}"
+        step="3600"
+        required
+      >
+    </label>
+
+    <button id="submit" type="submit">날씨 조회</button>
+  </form>
+
+  <p id="status" role="status" aria-live="polite">
+    조회 버튼을 눌러 주세요.
+  </p>
+
+  <section id="result" hidden>
+    <h2 id="location"></h2>
+    <p id="observed" class="muted"></p>
+
+    <div class="cards">
+      <article class="card">
+        <p>기온</p>
+        <div id="temperature" class="value"></div>
+      </article>
+      <article class="card">
+        <p>상대습도</p>
+        <div id="humidity" class="value"></div>
+      </article>
+      <article class="card">
+        <p>풍속</p>
+        <div id="wind" class="value"></div>
+      </article>
+      <article class="card">
+        <p>당일 누적 강수량</p>
+        <div id="rain" class="value"></div>
+      </article>
+    </div>
+
+    <p class="muted">
+      누적 강수량은 관측 시각까지의 값입니다.
+      결측값은 ‘자료 없음’으로 표시합니다.
+    </p>
+
+    <div class="meta">
+      앱 버전: <span id="version"></span><br>
+      처리 서버: <span id="server"></span><br>
+      조회 완료 시각: <span id="fetched"></span>
+    </div>
+  </section>
+
+  <footer class="muted">
+    자료 출처:
+    <a href="https://apihub.kma.go.kr/" target="_blank" rel="noopener">
+      기상청 API허브
+    </a>
+    · 종관기상관측(ASOS)
+  </footer>
+</main>
+
+<script>
+  const form = document.getElementById("weather-form");
+  const button = document.getElementById("submit");
+  const status = document.getElementById("status");
+  const result = document.getElementById("result");
+
+  function display(id, value) {
+    document.getElementById(id).textContent = value;
+  }
+
+  function measurement(value, unit) {
+    return value === null || value === undefined
+      ? "자료 없음"
+      : `${value} ${unit}`;
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    button.disabled = true;
+    button.textContent = "조회 중…";
+    status.className = "";
+    status.textContent = "기상청 관측자료를 가져오고 있습니다.";
+    result.hidden = true;
+
+    const params = new URLSearchParams({
+      station: document.getElementById("station").value,
+      time: document.getElementById("time").value,
+    });
+
+    try {
+      const response = await fetch(`/api/weather?${params}`);
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "자료 조회에 실패했습니다.");
+      }
+
+      display("location", `${data.station} 관측소 · ${data.station_id}`);
+      display("observed", `관측 시각: ${data.observed_at} KST`);
+      display("temperature", measurement(data.temperature, "℃"));
+      display("humidity", measurement(data.humidity, "%"));
+      display("wind", measurement(data.wind_speed, "m/s"));
+      display("rain", measurement(data.daily_rainfall, "mm"));
+      display("version", data.version);
+      display("server", data.server);
+      display("fetched", `${data.fetched_at} KST`);
+
+      status.textContent = "조회가 완료됐습니다.";
+      result.hidden = false;
+    } catch (error) {
+      status.className = "error";
+      status.textContent = error.message || "서버 연결에 실패했습니다.";
+    } finally {
+      button.disabled = false;
+      button.textContent = "날씨 조회";
+    }
+  });
+</script>
+</body>
+</html>
